@@ -1,0 +1,767 @@
+---
+title: |
+  \huge \textbf{Statystyczna Analiza Danych}
+subtitle: |
+  \Large \textbf{Zastosowanie technik PCA oraz MDS}
+output:
+  pdf_document:
+    number_sections: true
+    latex_engine: xelatex
+  html_document:
+    df_print: paged
+mainfont: Arial
+fontsize: 11pt
+geometry: left=0.4in, right=0.4in, top=0.6in, bottom=0.6in
+header-includes:
+- \usepackage{caption}
+- \usepackage{graphicx}
+- \usepackage{makecell}
+- \captionsetup[table]{ font={small, it}, labelfont=bf, name=Tabela}
+- \captionsetup[figure]{font={small, it}, labelfont=bf, name=Wykres}
+- \usepackage{floatrow}
+- \setcounter{secnumdepth}{3}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+options(OutDec = ",")
+options(scipen = 999)
+```
+
+# Wprowadzenie
+
+Celem niniejszego projektu jest analiza statystyczna osiągnięć zawodników ligi NBA występujących na pozycji środkowego (Center) w sezonie 2023. W dobie rosnącej roli analityki sportowej, ocena przydatności i efektywności graczy wymaga uwzględnienia wielu zróżnicowanych wskaźników jednocześnie – od podstawowych zdobyczy punktowych i zbiórek, po skuteczność rzutów i wskaźniki wpływu na grę zespołu.
+
+Główną metodą badawczą zastosowaną w pracy jest Analiza Głównych Składowych (PCA). Pozwoli ona na redukcję wymiarowości zbioru danych i wyodrębnienie kluczowych czynników (składowych), które wyjaśniają największą część zmienności w statystykach zawodników. Dzięki PCA możliwe będzie wskazanie, które cechy najbardziej różnicują środkowych oraz czy istnieją ukryte wzorce (np. podział na graczy defensywnych i ofensywnych), które nie są widoczne przy analizie pojedynczych zmiennych.
+
+Jako uzupełnienie analizy PCA, w dalszej części raportu zostanie przeprowadzone Skalowanie Wielowymiarowe (MDS). Metoda ta posłuży do wizualizacji relacji pomiędzy zawodnikami poprzez odwzorowanie ich podobieństwa w przestrzeni wielowymiarowej. Pozwoli to na intuicyjną identyfikację graczy o zbliżonym profilu statystycznym oraz ewentualnych obserwacji odstających.
+
+## Biblioteki
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, collapse=TRUE}
+library(dplyr)
+library(tidyr)
+library(psych)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(zoo)
+library(lubridate)
+library(gridExtra)
+library(MuMIn)
+library(tseries)
+library(readxl)
+library(corrplot)
+library(base)
+library(stats)
+library(factoextra)
+library(MASS)
+library(rgl)
+```
+
+\newpage
+
+# Wczytanie i przygotowanie danych
+
+```{r}
+dane <- read.csv("2023_nba_player_stats.csv")
+nba_Data <- dane %>%
+  filter(POS == "C") %>%
+  dplyr::select(1,5,6,7,8,9,12,15,18,19,20,25,30)
+
+rownames(nba_Data) <- make.names(nba_Data$PName, unique = TRUE)
+```
+
+### Struktura danych
+
+```{r}
+lista_opisow <- c(
+  "Imię i nazwisko zawodnika",
+  "Liczba rozegranych meczów (Games Played)",
+  "Liczba zwycięstw (Wins)",
+  "Liczba porażek (Losses)",
+  "Średnia liczba minut na mecz",
+  "Liczba zdobytych punktów",
+  "Skuteczność rzutów z gry (%)",
+  "Skuteczność rzutów za 3 punkty (%)",
+  "Skuteczność rzutów wolnych (%)",
+  "Zbiórki w ataku (Offensive Rebounds)",
+  "Zbiórki w obronie (Defensive Rebounds)",
+  "Bloki (Blocks)",
+  "Wskaźnik Plus/Minus (wpływ zawodnika na wynik zespołu)"
+)
+struktura_tabela <- data.frame(
+  Zmienna = names(nba_Data),          # Nazwy pobrane automatycznie
+  Typ = sapply(nba_Data, class),      # Typy pobrane automatycznie
+  Opis = lista_opisow,                # Przypisujemy opisy
+  row.names = NULL
+)
+struktura_tabela %>%
+  kable( booktabs = TRUE, 
+        caption = "Struktura i opis zmiennych (nazwy pobrane automatycznie)",
+        col.names = c("Nazwa zmiennej", "Typ danych", "Opis zmiennej")) %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2, italic = TRUE, width = "2cm") %>%
+  column_spec(3, width = "10cm") %>%
+  kable_styling(latex_options = c("striped", "hold_position"), 
+                position = "center", font_size = 10)
+nba_Data %>%
+  head(5) %>%
+  kable( booktabs = TRUE, 
+        caption = "Podgląd struktury danych (pierwsze 5 obserwacji)") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"), 
+                position = "center", 
+                font_size = 10)
+```
+
+\newpage
+
+### Statystyki opisowe
+
+```{r}
+stat <- describe(nba_Data)
+
+statystyki <- data.frame(
+  Zmienna = rownames(stat),            # automatycznie pobiera X1, X2 itd.
+  Minimum = round(stat$min, 2),
+  Mediana = round(stat$median, 2),
+  Maksimum = round(stat$max, 2),
+  Skośność = round(stat$skew, 2),
+  Kurtoza = round(stat$kurtosis, 2),
+  Średnia = round(stat$mean, 2),
+  Odchylenie = round(stat$sd, 2)
+)
+
+# Kable ze stylami jak w publikacji
+C0<-0
+statystyki %>%
+  kable( longtable = TRUE, booktabs = TRUE,
+        align = "c", caption = "Podstawowe statystyki opisowe zmiennych") %>%
+  row_spec(C0, bold = TRUE, align = "c") %>%
+  kable_styling(latex_options = c("hold_position", "striped", "bordered"), 
+                font_size = 11, full_width = FALSE, position = "center")
+```
+
+Analiza statystyk opisowych ujawnia bardzo duże zróżnicowanie w badanej grupie środkowych. Wskazuje na to wysokie odchylenie standardowe przy większości zmiennych liczbowych (np. PTS, Min, DREB).
+
+Warto zwrócić uwagę na ogromną przepaść między wartościami średnimi a maksymalnymi. Przykładowo, średnia liczba punktów (PTS) wynosi ok. 483, podczas gdy najlepszy zawodnik zdobył ich aż 2183. Świadczy to o specyfice ligi NBA: mamy do czynienia z wąską grupą gwiazd (outlierów) o wybitnych osiągach oraz szeroką grupą zadaniowców.
+
+Dodatkowo, dodatnie wartości skośności (dla PTS 1.26, BLK 1.51) sugerują rozkład prawoskośny – większość zawodników osiąga wyniki poniżej średniej, a średnią zawyżają nieliczni liderzy.
+
+\newpage
+
+```{r}
+nba_long <- nba_Data %>%
+  dplyr::select(where(is.numeric)) %>%   # Wybieramy tylko kolumny liczbowe (pomijamy nazwiska/POS)
+  pivot_longer(cols = everything(), names_to = "Zmienna", values_to = "Wartosc")
+
+ggplot(nba_long, aes(x = Wartosc)) +
+  geom_histogram(aes(y = ..density..), bins = 20, fill = "steelblue", color = "white", alpha = 0.7) +
+  geom_density(color = "darkred", size = 1) +
+  facet_wrap(~Zmienna, scales = "free") +  # "scales = free" - każda oś dopasowana do własnych danych
+  theme_minimal() +
+  labs(title = "Rozkłady zmiennych", x = "Wartość", y = "Gęstość") +
+  theme(strip.text = element_text(face = "bold", size = 10),
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
+```
+
+Analiza wizualna histogramów potwierdza wnioski płynące z tabeli statystyk:
+
+**Rozkłady prawoskośne (niesymetryczne):** Zmienne takie jak bloki (BLK), punkty (PTS) czy wskaźnik +/- (X...) wykazują silną asymetrię prawostronną. Na wykresach widać wysokie słupki po lewej stronie (dużo graczy z niskimi wynikami) i długi "ogon" po prawej. Ten ogon to są właśnie nieliczne gwiazdy w lidze.
+
+**Rozkłady lewoskośne (niesymetryczne):** Zmienne takie jak skuteczność rzutów wolnych (FT.) czy rozegrane mecze wykazują asymetrię lewostronną. Wynika to z faktu, że rzuty wolne to teoretycznie najłatwiejsze szanse dla zawodników na zdobycie punktów. Od każdego zawodnika bez względu na jego pozycję, wymaga się aby jego skuteczność była jak najwyższa. Jeśli chodzi o rozegrane mecze, w składach drużyn NBA jest najmniej centrów. Z tego powodu częściej występują w meczach.
+
+**Rozkłady zbliżone do normalnego:** Zmienne określające skuteczność, takie jak FG. (skuteczność z gry), mają rozkład bardziej przypominający kształt dzwonu. Oznacza to, że większość środkowych rzuca na podobnym poziomie skuteczności (ok. 57%), a skrajnie nieskuteczni lub wybitnie skuteczni gracze są rzadkością.
+
+**Wnioski dla modelowania:** Tak silna skośność zmiennych liczbowych jest ważnym sygnałem przed zastosowaniem PCA, ponieważ metoda ta jest wrażliwa na wartości odstające. Potwierdza to konieczność standaryzacji danych przed dalszą analizą.
+
+\newpage
+
+```{r}
+outliers <- c("Joel Embiid", "Nikola Jokic", "Brook Lopez", "Bam Adebayo", "Steven Adams")
+
+stat_outliers <- nba_Data %>%
+  filter(PName %in% outliers) %>%
+  mutate(ZB_Total = OREB + DREB) %>%
+  dplyr::select(PName, PTS, ZB_Total, BLK, X3P., FT., X..., Min)
+
+srednia_reszta <- nba_Data %>%
+  filter(!PName %in% outliers) %>%
+  summarise(
+    PName = "Średnia Ligowa (Reszta)",
+    PTS = mean(PTS, na.rm = TRUE),
+    ZB_Total = mean(OREB + DREB, na.rm = TRUE),
+    BLK = mean(BLK, na.rm = TRUE),
+    X3P. = mean(X3P., na.rm = TRUE),
+    FT. = mean(FT., na.rm = TRUE),
+    X... = mean(X..., na.rm = TRUE),
+    Min = mean(Min, na.rm = TRUE)
+  )
+
+tabela_outliers <- bind_rows(stat_outliers, srednia_reszta)
+
+kable(tabela_outliers, digits = 1, row.names = FALSE,
+      col.names = c("Zawodnik", "PTS", "Zbiórki", "Bloki", "3P%", "FT%", "+/-", "Min"),
+      caption = "Analiza wartości odstających: Porównanie profili liderów z tłem ligi") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"), position = "center")
+```
+
+Powyższa tabela pokazuje kilku zawodników, będących reprezentantami wartości skrajnych dla różnych zmiennych:
+
+1\. Joel Embiid - PTS & FT%: Embiid jest fenomenem ataku. Zdobywa 5-krotnie więcej punktów (2183) niż ligowa średnia. Co kluczowe, łączy to ze skutecznością rzutów wolnych na poziomie 85.7%.
+
+2\. Nikola Jokić - Plus/Minus (+/-): Jokić dominuje w statystyce wpływu na zespół (+640).
+
+3\. Brook Lopez - Bloki & 3P%: Lopez to unikalny przypadek łączący elitarną ochronę obręczy (193 bloki) z rzutami z dystansu (37.4%).
+
+4\. Bam Adebayo - Minuty: Adebayo spędza na parkiecie blisko 2600 minut (przy średniej ligowej 937), co czyni go niezastąpionym elementem defensywy swojego zespołu.
+
+5\. Steven Adams - FT% (Rzuty Wolne): Adams reprezentuje "lewy ogon" rozkładu skuteczności. Jego skuteczność z linii rzutów wolnych wynosi zaledwie 36.4% (przy średniej ligowej 67% i wyniku Embiida 85%).
+
+\newpage
+
+### Wyznaczanie macierzy korelacji
+
+```{r}
+korelacje <- cor(nba_Data[, -1], method = "pearson")
+macierz <- corrplot(korelacje, method="color", type="upper", addCoef.col = "black", number.cex = 0.7)
+```
+
+Analiza macierzy korelacji dostarcza kluczowych informacji na temat powiązań między zmiennymi, co stanowi fundament pod redukcję wymiarowości metodą PCA:
+
+-   Obserwujemy bardzo silne, dodatnie korelacje między czasem gry (Min), punktami (PTS), zbiórkami (DREB, OREB) oraz blokami (BLK). Współczynniki korelacji w tym klastrze często przekraczają poziom $r > 0.7$ (np. PTS i Min $r \approx 0.9$, PTS i FT% $r \approx 0.76$). Jest to sygnał występowania współliniowości. Oznacza to, że te zmienne niosą powieloną informację – lepsi zawodnicy grają dłużej i zdobywają więcej punktów/zbiórek we wszystkich kategoriach. PCA pozwoli skompresować te wszystkie zmienne do jednej głównej składowej (prawdopodobnie PC1), interpretowanej jako "Ogólna jakość/efektywność zawodnika".
+
+-   Umiejętność rzucania za 3 punkty jest u środkowych (Center) cechą specyficzną, niezależną od bycia dobrym zbierającym czy blokującym. Sugeruje to, że ta zmienna będzie silnie rzutować na drugą lub trzecią składową główną (PC2/PC3), różnicując graczy na typowych "podkoszowych" i nowoczesnych "stretch fives".
+
+-   Silna korelacja między zbiórkami w obronie (DREB) a blokami (BLK) ($r \approx 0.7$) potwierdza, że kompetencje defensywne zazwyczaj idą w parze. PCA pozwoli połączyć te cechy w jeden wymiar opisujący potencjał obronny.
+
+\newpage
+
+# PCA
+
+## Test Bartletta
+
+Weryfikacja czy zmienne są wystarczająco skorelowane ze sobą, aby przeprowadzić PCA.
+
+```{r}
+wynik_bartlett <- cortest.bartlett(korelacje, n = nrow(nba_Data))
+
+tabela_bartlett <-data.frame(
+  Statystyka = "Chi-kwadrat",
+  Wartość = round(wynik_bartlett$chisq, 2),
+  `Stopnie swobody (df)` = wynik_bartlett$df,
+  `p-value` = ifelse(wynik_bartlett$p.value < 0.001, "< 0.001", round(wynik_bartlett$p.value, 4))
+)
+
+tabela_bartlett %>%
+  kable( booktabs = TRUE, 
+        caption = "Wyniki testu sferyczności Bartletta",
+        align = "c") %>%
+  kable_styling(latex_options = c("striped", "hold_position"), 
+                position = "center", full_width = FALSE)
+```
+
+Hipoteza zerowa ($H_0$) tego testu zakłada, że macierz korelacji jest macierzą jednostkową, co oznaczałoby brak istotnych związków między cechami zawodników.Uzyskana wartość prawdopodobieństwa testowego ($p\text{-value} < 0.001$) jest znacznie niższa od przyjętego poziomu istotności $\alpha = 0.05$. Daje to podstawy do odrzucenia hipotezy zerowej.
+
+**Wniosek** Odrzucenie hipotezy zerowej potwierdza, że pomiędzy analizowanymi statystykami (takimi jak punkty, zbiórki, czas gry) występują istotne statystycznie korelacje. Oznacza to, że dane zawierają ukryte struktury, które można skutecznie wyodrębnić, a zastosowanie Analizy Głównych Składowych (PCA) jest w tym przypadku w pełni uzasadnione merytorycznie i statystycznie.
+
+## Wyznaczanie wartości własnych
+
+```{r}
+pca <- prcomp(nba_Data[-1], center=TRUE, scale=TRUE)
+eig_val <- get_eigenvalue(pca)
+
+eig_val %>%
+  kable( booktabs = TRUE, 
+        caption = "Wartości własne i procent wyjaśnianej wariancji",
+        col.names = c("Wartość własna", "% wariancji", "% skumulowany"),
+        digits = 2,
+        align = "c") %>%
+  kable_styling(latex_options = c("striped", "hold_position"), 
+                position = "center", full_width = FALSE) %>%
+  row_spec(which(eig_val[,1] > 1), bold = TRUE, color = "black")
+```
+
+## Wizualizacja wartości własnych
+
+```{r fig.height=4}
+fviz_eig(pca, 
+         choice = "variance", 
+         addlabels = TRUE, 
+         barfill = "steelblue", 
+         barcolor = "steelblue", 
+         linecolor = "red", 
+         ggtheme = theme_minimal()) +
+  labs(title = "Procent wyjaśnianej wariancji przez kolejne składowe",
+       x = "Składowe główne", y = "% Wariancji")
+```
+
+Ze względu na ograniczenia percepcji wykresów trójwymiarowych na płaszczyźnie, interpretacja zostanie przeprowadzona dwuetapowo:
+
+-   Analiza głównego układu PC1 vs PC2 (wyjaśniającego większość, bo aż 67% zmienności).
+
+-   Analiza uzupełniająca układu PC1 vs PC3, co pozwoli zinterpretować znaczenie trzeciego wymiaru i zidentyfikować zjawiska, których nie widać na pierwszym rzucie.
+
+```{r}
+ladunki <- data.frame(pca$rotation[, 1:3])
+
+ladunki %>%
+  kable( booktabs = TRUE, 
+        caption = "Ładunki czynnikowe (korelacje zmiennych ze składowymi)",
+        digits = 3) %>%
+  kable_styling(latex_options = c("striped", "hold_position"), position = "center") %>%
+  column_spec(2, bold = abs(ladunki$PC1) > 0.3, color = ifelse(abs(ladunki$PC1) > 0.3, "black", "gray")) %>%
+  column_spec(3, bold = abs(ladunki$PC2) > 0.3, color = ifelse(abs(ladunki$PC2) > 0.3, "black", "gray")) %>%
+  column_spec(4, bold = abs(ladunki$PC3) > 0.3, color = ifelse(abs(ladunki$PC3) > 0.3, "black", "gray"))
+```
+
+\newpage
+
+## Wizualizacja 2D i 3D w płaszczyźnie
+
+```{r fig.height=5, fig.width=9}
+fviz_pca_biplot(pca,
+                col.var = "black",
+                repel = TRUE,
+                
+                col.ind = "contrib",     # Kolor ważności
+                gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+                pointsize = 2,
+                labelsize = 3,
+                
+                title = "PC1 vs PC2: Jakość vs Styl gry",
+                xlab = paste0("PC1 - Jakość/Wolumen (", round(pca$sdev[1]^2/sum(pca$sdev^2)*100,1), "%)"),
+                ylab = paste0("PC2 - Styl gry/Rzuty (", round(pca$sdev[2]^2/sum(pca$sdev^2)*100,1), "%)")
+)
+
+
+
+```
+
+```{r fig.height=5, fig.width=9}
+fviz_pca_biplot(pca, 
+                axes = c(1, 3),     
+                geom = "point",      
+                col.var = "black",   
+                col.ind = "gray",    
+                title = "PC1 vs PC3: Analiza trzeciego wymiaru"
+)
+```
+
+\newpage
+
+## Wnioski z analizy PCA
+
+Przeprowadzona Analiza Głównych Składowych (PCA) pozwoliła zredukować wielowymiarową przestrzeń 12 statystyk do trzech kluczowych wymiarów (składowych), które łącznie wyjaśniają 78,13% całkowitej zmienności w zbiorze danych. Analiza ładunków czynnikowych oraz wykresów biplot pozwoliła na zidentyfikowanie następujących wzorców charakteryzujących środkowych (Center) w NBA:
+
+1.  PC1: Oś "Jakości i Wolumenu Gry" (53,8% wariancji) Pierwsza składowa stanowi najważniejszy wyznacznik klasy zawodnika.
+
+Charakterystyka: Zmienna ta jest silnie ujemnie skorelowana z kluczowymi statystykami ilościowymi: czasem gry (Min, ładunek -0.38), punktami (PTS, -0.34) oraz zbiórkami (DREB, -0.37).
+
+Interpretacja wykresu: Na wykresie Biplot (PC1 vs PC2) obserwujemy, że "najlepsi" zawodnicy znajdują się po lewej stronie (wartości ujemne PC1).
+
+Wnioski: Oś ta segreguje graczy od rezerwowych i zadaniowców (prawa strona wykresu) do supergwiazd ligi (skrajna lewa strona).
+
+2.  PC2: Oś "Stylu Gry" – Nowoczesność vs Tradycja (13,6% wariancji) Druga składowa jest niezależna od jakości gracza i opisuje jego profil boiskowy.
+
+Wartości dodatnie (Góra wykresu): Są silnie powiązane ze skutecznością rzutów wolnych (FT., 0.62) oraz rzutami za trzy punkty (X3P., 0.38). Reprezentują one typ "Stretch Five" – środkowych rozciągających grę i grożących rzutem z dystansu.
+
+Wartości ujemne (Dół wykresu): Korelują ze skutecznością z gry (FG., -0.55) i zbiórkami ofensywnymi (OREB). Wskazuje to na tradycyjnych centrów (tzw. Paint Beasts), którzy operują w strefie podkoszowej, zdobywając punkty z wsadów i dobitek.
+
+3.  PC3: Oś "Wpływu na Zwycięstwa" (Impact) (10,8% wariancji) Trzecia składowa, choć wyjaśnia najmniej wariancji, wnosi kluczowy kontekst dotyczący efektywności zespołowej.
+
+Charakterystyka: Najsilniejszy ładunek czynnikowy posiada tutaj wskaźnik Plus/Minus (X..., 0.77) oraz liczba zwycięstw (W, 0.24).
+
+Wnioski: PC3 pozwala odróżnić zawodników, którzy robią "puste statystyki" w słabych zespołach, od tych, którzy realnie przekładają się na wygrane drużyny. Wysoka wartość na tej osi oznacza, że obecność danego gracza na parkiecie koreluje z lepszym wynikiem punktowym całego zespołu.
+
+Podsumowanie: Zastosowanie metody PCA ujawniło, że pozycja środkowego w NBA uległa silnej polaryzacji. Podczas gdy pierwsza składowa (PC1) wciąż definiuje hierarchię "gwiazda vs rezerwowy", to druga składowa (PC2) pokazuje, że istnieją dwie równorzędne drogi do bycia efektywnym: dominacja fizyczna pod koszem lub umiejętności strzeleckie na obwodzie.
+
+\newpage
+
+### Reprezentanci powstałych grup
+
+Aby lepiej zrozumieć, co determinuje pozycję zawodników na wykresie PCA, przyjrzyjmy się czterem charakterystycznym grupom, które definiują granice naszego układu współrzędnych:
+
+1.  Lewa Górna Część: To elita nowoczesnej koszykówki. Są to kluczowi zawodnicy swoich drużyn, którzy wyróżniają się unikalną umiejętnością: mimo wysokiego wzrostu potrafią skutecznie rzucać za 3 punkty. Dzięki temu są groźni na całym boisku – nie tylko pod koszem, ale i na obwodzie.
+
+    -   Przykłady z wykresu: Joel Embid, Nikola Jokic, Brook Lopez, Nikola Vucevic
+
+2.  Lewa Dolna Część: Jest to grupa zawodników reprezentujących bardziej tradycyjny styl gry na tej pozycji (skupienie na graniu w obrębie kosza - ujemne wartości PC2), którzy wciąż świetnie odnajdują swoje miejsce w lidze. Wciąż są kluczowymi zawodnikami (niska wartość PC1).
+
+    -   Przykłady z wykresu: Ivica Zubac, Rudy Gobert, Alperen Sengun
+
+3.  Prawa Górna Cześć: Są to zawodnicy rezerwowi, którzy wchodzą na boisko w bardzo konkretnym celu: aby oddać rzut z dystansu (mały wolumen i wysoka wartość PC2). Nie grają dużej liczby minut i rzadziej angażują się w walkę fizyczną pod koszem, ale dobrze rzucają za 3 punkty na tle reszty zawodników.
+
+    Przykłady z wykresu: Mo Bamba, Karl-Anthony Towns, Willy Hernangomez
+
+4.  Prawa Dolna Część: Znajdują się tu gracze o najmniejszym wpływie na losy meczu. Nie posiadają rzutu z dystansu, a krótki czas gry nie pozwala im na wykręcenie wysokich statystyk w ataku czy obronie.
+
+    -   Przykłady z wykresu: Cody Zeller, James Wiseman, JaVale McGee
+
+\newpage
+
+# Skalowanie wielowymiarowe - MDS
+
+## Wprowadzenie
+
+MDS służy do przedstawienia relacji między obiektami - w tym przypadku między zawodnikami NBA na pozycji centra - w postaci konfiguracji punktów w przestrzeni o określonych wymiarach. Celem jest przedstawienie dystansu między obiektami na wykresie, tak aby odległość między punktami jak najlepiej oddawały ich podobieństwo do siebie.
+
+W analizie wykorzystano jako metodę skalowania - Klasyczną metodę skalowania oraz Metodę skalowania Sammona. Minimalizuje ona błąd odwzorowania oryginalych odległości i szczególnie akcentuje zachowanie małych dystansów. Algorytm oblicza konfigurację puntków, w której różnica między oryginalną a odwzorowaną macierzą odległości jest jak najmniejsza. Różnicę tą mierzy się za pomocą współczynnika STRESS. Im niższy tym wierniej odtworzono pierwotne odległości. W projekcie STRESS będzie interpretowany na podstawie tabelki: (Źródło: "Walesiak M, Gantar E, Statystyczna analiza danych z wykorzystaniem programu R, Wydawnictwo PWN, Warszawa, 2009.")
+
+```{r fig.width=5}
+stress_tab <- data.frame(
+  STRESS = c(">20%", "10–20%", "5–10%", "2–5%", "0–2%", "0%"),
+  Dopasowanie = c("bardzo słabe", "słabe", "średnie", "dobre", "bardzo dobre", "idealne")
+)
+
+kable(stress_tab,  
+      booktabs = TRUE, align = "c",
+      caption = "Interpretacja współczynnika STRESS") %>%
+  kable_styling(latex_options = c("striped", "hold_position"), position = "center")
+
+```
+
+## Standaryzacja i obliczenie dystansu między obiektami
+
+Przed MDS dane zostały zestandaryzowane. Następnie obliczono oryginalne odległości pomiędzy obiektami. Będą one porównywane po skalowaniach.
+
+```{r}
+nba_Data_stand <- scale(nba_Data[2:13])
+distance <- as.matrix(dist(nba_Data_stand))
+```
+
+\newpage
+
+## Wyniki dla jedengo wymiaru
+
+```{r message=FALSE, warning=FALSE, include=FALSE, output=FALSE}
+sam1 <- sammon(distance, k=1)
+sammon_coords1 <- sam1$points
+```
+
+```{r}
+idx6 <- 1:6
+sammon_table <- data.frame(
+  Zawodnik = nba_Data$PName[idx6],
+  WspSammon = round(sammon_coords1[idx6], 4)
+)
+
+kable(sammon_table, caption="Współrzędne Sammon mapping dla pierwszych 6 zawodników") %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+
+```
+
+```{r}
+distanceV1 <- as.matrix(dist(sammon_coords1))
+# Podmacierze dla pierwszych 6 zawodników
+distance6 <- distance[idx6, idx6]
+distanceV1_6 <- distanceV1[idx6, idx6]
+
+kable(round(distance6,3), caption="Oryginalna macierz odległości (pierwszych 6 zawodników)") %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+
+kable(round(distanceV1_6,3), caption="Macierz odległości po Sammon mapping (pierwszych 6 zawodników)") %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+```
+
+```{r}
+stress_table <- data.frame(
+  `STRESS` = round(sam1$stress, 4)
+)
+
+kable(stress_table, 
+      align = "c", 
+      caption = "Współczynnik STRESS dla Sammon k = 1", 
+      label = "stress"
+      ) %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+```
+
+\newpage
+
+### Wnioski - jeden wymiar
+
+Przedstawione trzy tabele stanowią podglądowy wycinek pełnej analizy dla wszystkich zawodników. Zaprezentowano jedynie pierwsze 6 środkowych (z 78 analizowanych), by zobrazować sposób działania Sammon mapping i interpretacji wyników.
+
+**Współrzędne Sammon mapping (Tabela 7):**
+
+-   Wartości Sammon pokazują "pozycję" zawodnika w przestrzeni jednowymiarowej
+
+-   Zawodnicy o podobnych współrzędnych są do siebie statystycznie zbliżeni - np. Joel Embiid i Brook Lopez.
+
+-   Duże różnice współrzędnych (np. między Jokiciem a Porzingisem) wskazują na wyraźnie odmienny profil gry.
+
+**Oryginalna macierz odległości (Tabela 8):**
+
+-   Prezentuje rzeczywiste dystanse pomiędzy zawodnikami, bazując na wybranych statystykach.
+
+-   Małe wartości (np. między Embiidem a Jokiciem) oznaczają wysokie podobieństwo; duże wartości – odmienność stylu.
+
+**Macierz odległości po Sammon mapping (Tabela 9):**
+
+-   Pokazuje, na ile udało się zachować względne odległości po rzutowaniu do jednej osi (k=1).
+
+-   Jeśli wartości są zbliżone do oryginału – model odwzorowuje relacje pomiędzy zawodnikami poprawnie.
+
+-   Różnice odległości mogą wskazywać na "utratę" informacji podczas redukcji wymiarowości (im mniej wymiarów – tym trudniej zachować pełnię relacji z oryginału - i tak właśnie jest w tym przypadku). Na podstawie tylko tej próbki można zauważyć, że wartości między tabelami odbiegają o siebie.
+
+**Współczynnik STRESS (Tabela 10):**
+
+-   Dla k=1 STRESS wynosi 0,1253 (\~12,5%), co według skali oznacza "słabe" dopasowanie.
+
+-   Taki wynik jest typowy przy rzutowaniu bardzo złożonych i wielowymiarowych danych do jednej osi – nie sposób oddać wszystkie relacje w 1D.
+
+-   Dlatego warto przejść do analizy dla większej ilości wymiarów - 2 i 3.
+
+\newpage
+
+## Wyniki dla dwóch wymiarów
+
+```{r include=FALSE}
+sam2 <- sammon(distance, k=2)
+sammon_coords2 <- sam2$points
+```
+
+```{r}
+idx6 <- 1:6
+sammon_table2 <- data.frame(
+  Zawodnik = nba_Data$PName[idx6],
+  Sammon1 = round(sammon_coords2[idx6,1], 4),
+  Sammon2 = round(sammon_coords2[idx6,2], 4)
+)
+
+kable(sammon_table2, 
+      caption="Współrzędne Sammon mapping (k=2) dla pierwszych 6 zawodników", 
+      row.names = FALSE) %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+```
+
+```{r}
+distanceV2 <- as.matrix(dist(sammon_coords2))
+distance6 <- distance[idx6, idx6]
+distanceV2_6 <- distanceV2[idx6, idx6]
+
+kable(round(distance6,3), caption="Oryginalna macierz odległości (pierwszych 6 zawodników)") %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+
+kable(round(distanceV2_6,3), caption="Macierz odległości po Sammon mapping k=2 (pierwszych 6 zawodników)") %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+
+```
+
+```{r}
+stress_table2 <- data.frame(
+  `STRESS` = round(sam2$stress, 4)
+)
+
+kable(stress_table2,
+      align = "c",
+      caption = "Współczynnik STRESS dla Sammon k = 2",
+      label = "stress2"
+      ) %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+
+```
+
+\newpage
+
+```{r fig.align='center'}
+library(ggplot2)
+sammon_plotdata <- data.frame(
+  Zawodnik = nba_Data$PName,
+  Sammon1 = sammon_coords2[,1],
+  Sammon2 = sammon_coords2[,2]
+)
+
+ggplot(sammon_plotdata, aes(x=Sammon1, y=Sammon2, label=Zawodnik)) +
+  geom_point(color="darkblue", size=2) +
+  geom_text(hjust=-0.1, vjust=-0.4, size=3) +
+  theme_minimal() +
+  labs(title="Wizualizacja skalowania na 2 wymiary",
+       x="wymiar1",
+       y="wymiar2") +
+  theme_bw()
+
+```
+
+### Wnioski - dwa wymiary
+
+**Współrzędne Sammon mapping (Tabela 11):**
+
+-   Zawodnicy otrzymują dwie współrzędne (Sammon1, Sammon2), które odwzorowują ich profil statystyczny w dwuwymiarowej przestrzeni.
+
+-   Podobne współrzędne oznaczają zbliżony styl, efektywność, cechy gry – gracze "są blisko siebie" w sensie statystycznym. Np.: Joel Embiid i Nikola Jokic położeni są daleko od pozostałych – sugeruje to wyraźnie odmienny profil względem innych środkowych (być może wybitność w wybranych statystykach).
+
+**Oryginalna macierz odległości (Tabela 12):**
+
+-   Ta sama tabelka co przy jednym wymiarze.
+
+**Macierz odległości po Sammon mapping (Tabela 13):**
+
+-   Pozwala porównać, jak dobrze zachowano relacje oryginalne po redukcji do dwóch wymiarów.
+
+-   Można zauważyć wzrost podobieństwa wartości między dwoma tabelkami. Wciąż jednak różnica jest zauważalna.
+
+**Współczynnik STRESS (Tabela 14):**
+
+-   STRESS dla k=2 jest bardzo niski (0,0366 ≈ 3,7%), co wg skali oznacza "dobre" dopasowanie.
+
+-   Potwierdza nam to, że rozszerzenie skalowania do dwóch wymiarów znacznie poprawiło dopasowanie.
+
+\newpage
+
+**Wykres 2D i grupowanie:**
+
+-   Na wykresie zostali zwizualizowani wszyscy zawodnicy poddani analizie. Skorzystano ze współrzędnych, które zwróciła funkcja sammon() - Tabela nr 11.
+
+-   Wizualizacja pozwala zidentyfikować klastry i obserwacje odstające (np. graczy unikalnych/statystycznie wybitnych). Gracze o zbliżonych współrzędnych tworzą grupy – wspólny styl gry, podobny wpływ na statystyki zespołu. Obiekty oddalone od centrum lub innych graczy mogą reprezentować nietypowe profile zawodników.
+
+-   Przykładowo: Embiid, Jokic, Lopez, Richards wyraźnie wyróżniają się od reszty. Jeżeli spojrzymy w dane, znajdziemy tam potwierdzenie tej obserwacji. Joel Embiid był w tamtym sezonie MVP oraz liderem w ilości zdobytych punktów. Nikola Jokic zakończył sezon z najlepszym wskaźnikiem +/- co pokazuje jak bardzo jego obecność na boisku pomaga w zwycięstwach drużyny. Brook Lopez był liderem w ilości bloków. Ciekawym przypadkiem jest Nick Richards, który na wykresie mocno odstaje od reszty. Ze statystyk wynika, że jest on solidnym jednak tylko lekko ponadprzeciętnym graczem. Wyróżnia go jedynie 100% skuteczność rzutów za 3, jednak przy tylko 3 próbach, co nie czyni go lepszym.
+
+Dlatego też zostanie przeprowadzona analiza dla 3 wymiarów aby sprawdzić czy możemy jeszcze polepszyć dopasowanie.
+
+\newpage
+
+## Wyniki dla trzech wymiarów
+
+```{r include=FALSE}
+sam3 <- sammon(distance, k=3)
+sammon_coords3 <- sam3$points
+```
+
+```{r}
+idx6 <- 1:6
+sammon_table3 <- data.frame(
+  Zawodnik = nba_Data$PName[idx6],
+  Sammon1 = round(sammon_coords3[idx6,1], 4),
+  Sammon2 = round(sammon_coords3[idx6,2], 4),
+  Sammon3 = round(sammon_coords3[idx6,3], 4)
+)
+kable(sammon_table3, caption="Współrzędne Sammon mapping (k=3) pierwszych 6 zawodników",row.names = FALSE) %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+
+```
+
+```{r}
+distanceV3 <- as.matrix(dist(sammon_coords3))
+distance6 <- distance[idx6, idx6]
+distanceV3_6 <- distanceV3[idx6, idx6]
+
+kable(round(distance6,3), caption="Oryginalna macierz odległości (pierwszych 6 zawodników)") %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+
+kable(round(distanceV3_6,3), caption="Macierz odległości po Sammon mapping k=3 (pierwszych 6 zawodników)") %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+
+
+```
+
+```{r}
+stress_table3 <- data.frame(
+  `STRESS` = round(sam3$stress, 4)
+)
+kable(stress_table3, 
+      align = "c", 
+      caption = "Współczynnik STRESS dla Sammon k = 3",
+      label = "stress3"
+      ) %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+
+```
+
+```{r include=FALSE}
+sam3 <- sammon(distance, k=3)
+sammon_coords3 <- sam3$points
+
+plot3d(sammon_coords3[,1], sammon_coords3[,2], sammon_coords3[,3], 
+       type = "s", col = "royalblue", size = 1,
+       xlab="Sammon1", ylab="Sammon2", zlab="Sammon3")
+
+text3d(sammon_coords3[,1], sammon_coords3[,2], sammon_coords3[,3],
+       texts = nba_Data$PName, cex = 0.7, adj = 1.15)
+
+rglwidget()
+```
+
+```{r}
+writeWebGL(filename="sammon3d_interaktywny2.html")
+```
+
+### Wnioski - trzy wymiary
+
+**Współrzędne Sammon mapping (Tabela 15):**
+
+-   Każdy zawodnik otrzymuje trzy współrzędne — Sammon1, Sammon2, Sammon3 — które reprezentują jego statystyczny profil w przestrzeni trójwymiarowej.
+
+-   Podobieństwo współrzędnych oznacza zbliżony styl i efektywność gry, natomiast duże różnice na jednej lub kilku osiach mogą wskazywać na unikalne cechy zawodnika.
+
+**Oryginalna macierz odległości (Tabela 16):**
+
+-   Pokazuje pierwotne statystyczne dystanse pomiędzy zawodnikami.
+
+**Macierz odległości po Sammon mapping k=3 (Tabela 17):**
+
+-   Pokazuje, jak układ zawodników w nowej przestrzeni 3D odwzorowuje ich realne relacje.
+
+-   Zauważalna jest jezcze wyższa zgodność rozkładu odległości względem macierzy oryginalnej niż było to w przypadku dwóch wymiarów.
+
+**Współczynnik STRESS (Tabela 18):**
+
+-   STRESS dla k=3 wynosi 0,0114 (\~1,1%), co według skali klasyfikuje się jako "bardzo dobre dopasowanie".
+
+-   Oznacza to, że rzutowanie do 3 wymiarów niemal idealnie odzwierciedla oryginalne relacje między zawodnikami — model trójwymiarowy zawiera prawie całą informację z danych wejściowych.
+
+\newpage
+
+**Wykres 3D i grupowanie:**
+
+-   Widoczne jest duże skupienie zawodników w centrum figury. To zawodnicy, którzy mają zbliżone parametry gry i nie wyróżniają się na tle innych.
+
+-   Warto spojrzeć na obiekty odstające, które są o wiele lepiej widoczne na wykresie. Joel Embiid i Nikola Jokic znajdują się bardzo blisko siebie i wyraźnie poza głównym skupiskiem. Wynik ten znajduje swoje potwierdzenie. W tamtym sezonie Joel Embiid został wybrany na MVP sezonu, a Nikola Jokic był drugi w tym zestawieniu.
+
+-   Ivica Zubac, Clint Capela oraz Rudy Gobert tworzą wyraźnie jedno skupisko. Patrząc na statystyki (tabelka poniżej) widzimy wielkie podobieństwo. Wszyscy są głównymi centrami w swoich drużynach, doświadczonymi i wszechstronnymi zawodnikami.
+
+```{r}
+wybrani <- nba_Data %>% 
+  filter(PName %in% c("Ivica Zubac", "Rudy Gobert", "Clint Capela"))
+
+kable(wybrani,row.names = FALSE) %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+```
+
+-   Vernon Carey Jr. oraz Mfiondu Kabengele tworzą małe skupisko w prawej górnej części wykresu. Oboje mają prawie identyczne statystyki - 6 pkt. zdobytych w całym sezonie, mniej niż 10 bloków i minusowe +/-. To grupa najgorzej radzących sobie zawodników w lidze na pozycji centra.
+
+```{r}
+wybrani <- nba_Data %>% 
+  filter(PName %in% c("Vernon Carey Jr.", "Mfiondu Kabengele"))
+
+kable(wybrani,row.names = FALSE) %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+```
+
+-   Ciekawym zjawiskiem jest oddalenie od wszystkich innych DeAndre'a Jordana. Dla fanów koszykówki to postać znana, jednak nieelitarna. Intuicja podpowiada, że powinien on być gdzieś w środku bryły. Po spojrzeniu na dane widzimy, że ma on bardzo podobne statystyki co Jericho Sims oraz Udoka Azubuike. To trójka, która zakończyła sezon z najlepszą skutecznością rzutową. Jedyną różnicą jest 100% skuteczności Jordana przy rzutach za 3, podczas gdy pozostali mają 0%. To wielka statystyczna różnica, jednak po zgłębieniu danych okazuje się, że wszyscy oddali jeden rzut w sezonie, jednak tylko Jordan zamienił go na 3 punkty. To pokazuje jak ważny jest dobór zmiennych oraz interpretacja wyników analizy przy wykorzystaniu danych wejściowych.
+
+```{r}
+wybrani <- nba_Data %>% 
+  filter(PName %in% c("DeAndre Jordan", "Jericho Sims", "Udoka Azubuike"))
+
+kable(wybrani,row.names = FALSE) %>%
+  kable_styling(full_width = F, bootstrap_options = c("condensed", "striped"))
+```
+
+
+\newpage
+
+
+# Podsumowanie
+
+Przeprowadzona analiza statystyczna z wykorzystaniem technik redukcji wymiarowości (PCA) oraz skalowania wielowymiarowego (MDS) pozwoliła na kompleksową ocenę profilu zawodników występujących na pozycji środkowego (Center) w lidze NBA w sezonie zasadniczym 2022/2023. Obie metody, choć odmienne, doprowadziły do spójnych i uzupełniających się wniosków.
+
+Analiza Głównych Składowych (PCA) okazała się kluczowa dla zrozumienia struktury danych. Pozwoliła zredukować zbiór 12 zmiennych do trzech interpretowalnych wymiarów: ogólnej jakości zawodnika (PC1), stylu gry (PC2 – podział na graczy obwodowych i podkoszowych) oraz wpływu na zwycięstwa (PC3). Dzięki temu zidentyfikowani zostali gracze ogólnie lepsi od przeciętnych oraz ich styl z podziałem na tradycyjną dominację fizyczną lub nowoczesną gry na dystansie.
+
+Metoda skalowania wielowymiarowego (MDS), a konkretnie algorytm Sammona, świetnie dopełniła ten obraz, wizualizując podobieństwa między konkretnymi graczami. W przeciwieństwie do PCA, gdzie analizujemy cechy, MDS pozwoliło zobaczyć relacje między każdym z zawodników w przestrzeni. Technika ta skutecznie wyodrębniła klastry graczy o zbliżonym profilu oraz zidentyfikowała przypadki nietypowe, elitarne. Szczególnie cenna była analiza w trzech wymiarach, gdzie współczynnik STRESS spadł do poziomu 1,1%, co oznacza niemal idealne odwzorowanie rzeczywistych różnic między zawodnikami.
+
+
+Finalnie, analiza potwierdziła silną polaryzację ligi. Zarówno PCA, jak i MDS wyraźnie oddzieliły wąską elitę supergwiazd (jak Embiid czy Jokic) od szerokiego grona zadaniowców, pokazując, że w dzisiejszej NBA o wartości środkowego decyduje nie tylko wzrost i siła, ale coraz częściej wszechstronność i unikalny zestaw umiejętności.
